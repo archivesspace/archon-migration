@@ -9,9 +9,9 @@ We recommend migrating to the latest version of ArchivesSpace when possible. Arc
 
 ## Running the Archon migration tool
 
-1. Read the guidelines for migrating Archon data and prepare your data as needed.
+1. Read the guidelines for migrating Archon data and prepare your data as needed (http://archivesspace.org/wp-content/uploads/2017/12/Archon-to-ArchivesSpace-Migration-Tool-Instructions.pdf).
 2. Install ArchivesSpace and ensure that ArchivesSpace is running.
-3. Get the latest JAR file release.
+3. Get the latest JAR file release (https://github.com/archivesspace/archon-migration/releases/latest).
 4. Double-click the JAR file to open up the migration tool interface.
 5. Change the default information in the migration tool user interface as needed.
 6. Press the "Copy To Archives Space" button to start the migration process.
