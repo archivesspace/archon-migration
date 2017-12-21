@@ -17,7 +17,7 @@ We recommend migrating to the latest version of ArchivesSpace when possible. Arc
 6. Press the "Copy To Archives Space" button to start the migration process.
 7. Assess the migration using the migration report and clean up data as needed.
 
-####Notes For Developers
+## Notes For Developers
 
 To build this tool, use the IDE of your choice to build a standalone jar executable. Most of development work will probably take place on the following classes.
 
