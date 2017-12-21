@@ -16,3 +16,12 @@ We recommend migrating to the latest version of ArchivesSpace when possible. Arc
 5. Change the default information in the migration tool user interface as needed.
 6. Press the "Copy To Archives Space" button to start the migration process.
 7. Assess the migration using the migration report and clean up data as needed.
+
+####Notes For Developers
+
+To build this tool, use the IDE of your choice to build a standalone jar executable. Most of development work will probably take place on the following classes.
+
+* ASpaceCopyUtil - This class essentially controls the migration process and interacts with the UI (dbCopyFrame) as well as the classes listed below.
+* ASpaceMapper - Converts Archon JSON records to the ArchivesSpace JSON model.
+* ASpaceClient - Saves records to ASpace through http post.
+* ASpaceEnumUtil - Converts an Archon enum ID to the corresponding ASpace enum. Usually called by ASpaceMapper.

@@ -54,9 +54,6 @@ public class ASpaceMapper {
 
     // date formatter used to convert date string to date object
     SimpleDateFormat simpleDateFormat = new SimpleDateFormat("yyyyMMdd");
-    SimpleDateFormat simpleDateFormat2 = new SimpleDateFormat("yyyyddMM");
-    SimpleDateFormat humanDateFormat = new SimpleDateFormat("MM/dd/yyyy");
-
 
     // booleans used to convert some bbcode to html or blanks
     private boolean bbcodeToHTML = false;
@@ -128,68 +125,72 @@ public class ASpaceMapper {
      * @param enumList
      * @return
      */
-    public JSONObject mapEnumList(JSONObject enumList, String endpoint) throws Exception {
+    public ArrayList<JSONObject> mapEnumList(JSONObject enumList, String endpoint) throws Exception {
         // first we get the correct dynamic enum based on list. If it null then we just return null
-        JSONObject dynamicEnumJS = enumUtil.getDynamicEnum(endpoint);
+        ArrayList<JSONObject> dynamicEnums = enumUtil.getDynamicEnum(endpoint);
+        ArrayList<JSONObject> dynamicEnumsUpdated = new ArrayList<JSONObject>();
 
-        if(dynamicEnumJS == null) return null;
+        for (JSONObject dynamicEnumJS : dynamicEnums) {
 
-        // add the values return from aspace enum an arraylist to make lookup easier
-        JSONArray valuesJA = dynamicEnumJS.getJSONArray("values");
-        ArrayList<String> valuesList = new ArrayList<String>();
-        for(int i = 0; i < valuesJA.length(); i++) {
-            valuesList.add(valuesJA.getString(i));
-        }
+            if (dynamicEnumJS == null) return dynamicEnumsUpdated;
 
-        // now see if all the archon values are in the ASpace list already
-        // if they are not then add them
-        String valueKey = dynamicEnumJS.getString("valueKey");
-        String idPrefix = dynamicEnumJS.getString("idPrefix");
-
-        boolean toLowerCase = true;
-        if(dynamicEnumJS.has("keepValueCase")) {
-            toLowerCase = false;
-        }
-
-        int count = 0;
-        Iterator<String> keys = enumList.keys();
-        while(keys.hasNext()) {
-            JSONObject enumJS = enumList.getJSONObject(keys.next());
-            String value = enumJS.getString(valueKey);
-
-            // most values in ASpace are lower case so normalize
-            if(toLowerCase) {
-                value = value.toLowerCase();
+            // add the values return from aspace enum an arraylist to make lookup easier
+            JSONArray valuesJA = dynamicEnumJS.getJSONArray("values");
+            ArrayList<String> valuesList = new ArrayList<String>();
+            for (int i = 0; i < valuesJA.length(); i++) {
+                valuesList.add(valuesJA.getString(i));
             }
 
-            // some values have spaces which space normally uses underscore for
-            value = value.replace(" ", "_");
+            // now see if all the archon values are in the ASpace list already
+            // if they are not then add them
+            String valueKey = dynamicEnumJS.getString("valueKey");
+            String idPrefix = dynamicEnumJS.getString("idPrefix");
 
-            // map the id to value
-            String id = idPrefix + "_" + enumJS.get("ID");
-            enumUtil.addIdAndValueToEnumList(id, value);
-            if (idPrefix.equals("container_types")) {
-                aspaceCopyUtil.addContainerTypeValueToIDMapping(value, enumJS.getString("ID"));
+            boolean toLowerCase = true;
+            if (dynamicEnumJS.has("keepValueCase")) {
+                toLowerCase = false;
             }
 
-            // see if to add this to aspace
-            if(!valuesList.contains(value)) {
-                valuesJA.put(value);
-                count++;
-                System.out.println("Adding value " + value);
+            int count = 0;
+            Iterator<String> keys = enumList.keys();
+            while (keys.hasNext()) {
+                JSONObject enumJS = enumList.getJSONObject(keys.next());
+                String value = enumJS.getString(valueKey);
+
+                // most values in ASpace are lower case so normalize
+                if (toLowerCase) {
+                    value = value.toLowerCase();
+                }
+
+                // some values have spaces which space normally uses underscore for
+                value = value.replace(" ", "_");
+
+                // map the id to value
+                String id = idPrefix + "_" + enumJS.get("ID");
+                enumUtil.addIdAndValueToEnumList(id, value);
+                if (idPrefix.equals("container_types")) {
+                    aspaceCopyUtil.addContainerTypeValueToIDMapping(value, enumJS.getString("ID"));
+                }
+
+                // see if to add this to aspace
+                if (!valuesList.contains(value)) {
+                    valuesJA.put(value);
+                    count++;
+                    System.out.println("Adding value " + value);
+                }
+            }
+
+            // need to add other to extent unit type enum list
+            if (endpoint.contains("extentunits")) {
+                valuesJA.put(ASpaceEnumUtil.UNMAPPED);
+            }
+
+
+            if (count != 0) {
+                dynamicEnumsUpdated.add(dynamicEnumJS);
             }
         }
-
-        // need to add other to extent unit type enum list
-        if(endpoint.contains("extentunits")) {
-            valuesJA.put(ASpaceEnumUtil.UNMAPPED);
-        }
-
-        if(count != 0) {
-            return dynamicEnumJS;
-        } else {
-            return null;
-        }
+        return dynamicEnumsUpdated;
     }
 
     /**
@@ -215,6 +216,7 @@ public class ASpaceMapper {
         contactsJS.put("address_1", repository.get("Address"));
         contactsJS.put("address_2", repository.get("Address2"));
         contactsJS.put("city", repository.get("City"));
+        contactsJS.put("region", repository.get("State"));
 
         // add the country and country code together
         contactsJS.put("country", enumUtil.getASpaceCountryCode(repository.getInt("CountryID")));
@@ -292,6 +294,7 @@ public class ASpaceMapper {
         json.put("org_code", record.get("Code"));
         json.put("url", fixUrl(record.getString("URL")));
         json.put("publish", true);
+        json.put("country", enumUtil.getASpaceCountryCode(record.getInt("CountryID")));
 
         if(agentURI != null) {
             json.put("agent_representation", getReferenceObject(agentURI));
@@ -422,7 +425,9 @@ public class ASpaceMapper {
         }
 
         // add the source for the name
-        namesJS.put("source", enumUtil.getASpaceNameSource(record.getInt("CreatorSourceID")));
+        if (record.has("SubjectSourceID")) {
+            namesJS.put("source", enumUtil.getASpaceNameSourceForSubject(record.getInt("SubjectSourceID")));
+        } else namesJS.put("source", enumUtil.getASpaceNameSource(record.getInt("CreatorSourceID")));
 
         // add basic information to the names record
         String sortName = record.getString("Name");
@@ -897,11 +902,12 @@ public class ASpaceMapper {
      * Method to convert an collection record to json ASpace JSON
      *
      * @param record
-     * @param classificationIdPartsMap
+     * @param classificationIdentifiers
      * @return
      * @throws Exception
      */
-    public JSONObject convertCollection(JSONObject record, HashMap<String, String> classificationIdPartsMap) throws Exception {
+    public JSONObject convertCollection(JSONObject record, HashMap<String, String> classificationIdentifiers,
+                                        HashMap<String, String> classificationParents) throws Exception {
         // Main json object
         JSONObject json = new JSONObject();
 
@@ -934,29 +940,34 @@ public class ASpaceMapper {
 
         // get the ids and make them unique if we in DEBUG mode
         String id = record.getString("CollectionIdentifier");
+
+        // if the collection ID is empty fix it
+        if (id == null || id.isEmpty()) {
+            id = "##" + randomString.nextString();
+            while (resourceIDs.contains(id)) {
+                id = "##" + randomString.nextString();
+            }
+            aspaceCopyUtil.addErrorMessage("Empty collection ID. Changed to " + id + "\n");
+        }
+
         String classificationID = record.getString("ClassificationID");
         String[] idParts = new String[]{"", "", "", ""};
 
-        if(!classificationID.equals("0") && classificationIdPartsMap.get(classificationID) != null) {
-            String[] sa = classificationIdPartsMap.get(classificationID).split("/");
-
-            // this can be placed in a loop but lets keep it nice an clear?
-            if(sa.length == 1) {
-                idParts[0] = sa[0];
-                idParts[1]  = id;
-            } else if(sa.length == 2) {
-                idParts[0] = sa[0];
-                idParts[1] = sa[1];
-                idParts[2] = id;
-            } else if (sa.length == 3) {
-                idParts[0] = sa[0];
-                idParts[1] = sa[1];
-                idParts[2] = sa[2];
-                idParts[3] = id;
-            }
-        } else {
-            idParts[0] = id;
+        Stack<String> fullId = new Stack<String>();
+        fullId.push(id);
+        String cId = classificationID;
+        while (cId != null) {
+            String identifier = classificationIdentifiers.get(cId);
+            if (identifier == null) break;
+            fullId.push(identifier);
+            cId = classificationParents.get(cId);
         }
+
+        idParts[0] = fullId.pop();
+        if (!fullId.isEmpty()) idParts[1] = fullId.pop();
+        if (!fullId.isEmpty()) idParts[2] = fullId.pop();
+        while (fullId.size() > 1) idParts[2] += "-" + fullId.pop();
+        if (!fullId.isEmpty()) idParts[3] = fullId.pop();
 
         // make sure the id is unique
         getUniqueID(ASpaceClient.RESOURCE_ENDPOINT, "", idParts, title);
@@ -1215,54 +1226,8 @@ public class ASpaceMapper {
             json.put("component_id", record.getString("UniqueID"));
         }
 
-        //json.put("position", record.getInt("SortOrder"));
-
-        // place a dummy key to help with the sorting if we redoing the sorting
-        String paddedSortOrder = String.format("%05d", record.getInt("SortOrder"));
-        json.put("sort_key1", paddedSortOrder + "_" + record.get("ID"));
-        json.put("sort_key2", ""); // sort order of the parent physical only content record
-
         // add the notes
         addResourceComponentNotes(record, json);
-
-        return json;
-    }
-
-    /**
-     * Method to convert container information for physical only component
-     * into a component
-     *
-     * @param aoEndpoint
-     * @param containerList
-     * @return
-     * @throws Exception
-     */
-    public JSONObject convertContainerInformation(String aoEndpoint, ArrayList<String> containerList) throws Exception {
-        String[] sa = containerList.get(0).split("::");
-
-        // Main json object
-        JSONObject json = new JSONObject();
-
-        json.put("uri", aoEndpoint + "/" + sa[2]);
-        json.put("jsonmodel_type", "archival_object");
-
-        json.put("publish", publishRecord);
-
-
-        /* Add fields needed for abstract_archival_object.rb */
-
-        // check to make sure we have a title
-        String title = WordUtils.capitalize(sa[0] + " " + sa[1]);
-        json.put("title", title);
-
-        /* add field required for archival_object.rb */
-        json.put("level", "item");
-
-        // make the ref id unique otherwise ASpace complains
-        String refId = sa[2];
-        json.put("ref_id", refId);
-
-        json.put("position", new Integer(sa[3]));
 
         return json;
     }
@@ -1480,7 +1445,17 @@ public class ASpaceMapper {
      * @throws Exception
      */
     private void addMultipartNote(JSONArray notesJA, String noteType, String noteLabel, String noteContent) throws Exception {
-        if(noteContent.isEmpty() || noteType.isEmpty()) return;
+        if(noteContent.trim().isEmpty() || noteType.isEmpty()) return;
+
+        // these note types don't exist in ASpace
+        if (noteType.equals("unitid") || noteType.equals("origination") || noteType.equals("note")) noteType = "odd";
+
+        // these note types should be single part
+        if (noteType.equals("physfacet") || noteType.equals("physdesc") || noteType.equals("langmaterial") ||
+                noteType.equals("materialspec")) {
+            addSinglePartNote(notesJA, noteType, noteLabel, noteContent);
+            return;
+        }
 
         JSONObject noteJS = new JSONObject();
 
@@ -1857,19 +1832,12 @@ public class ASpaceMapper {
      * @return
      */
     private String getHumanReadableDate(String dateString) {
-        Date date = null;
-
         try {
-            date = simpleDateFormat.parse(dateString);
-        } catch (ParseException e) { }
-
-        try {
-            date = simpleDateFormat2.parse(dateString);
-        } catch (ParseException e) { }
-
-        if(date != null) {
-            return humanDateFormat.format(date);
-        } else {
+            String year = dateString.substring(0, 4);
+            String month = dateString.substring(4, 6);
+            String day = dateString.substring(6);
+            return month + "/" + day + "/" + year;
+        } catch (Exception e) {
             return dateString;
         }
     }

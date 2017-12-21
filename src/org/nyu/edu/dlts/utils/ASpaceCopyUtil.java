@@ -68,7 +68,8 @@ public class ASpaceCopyUtil implements  PrintConsole {
     private HashMap<String, String> classificationTermURIMap = new HashMap<String, String>();
 
     // hashmap that maps classification and classification term ids to make it easy to construct
-    private HashMap<String, String> classificationIdPartsMap = new HashMap<String, String>();
+    private HashMap<String, String> classificationIdentifiers = new HashMap<String, String>();
+    private HashMap<String, String> classificationParents = new HashMap<String, String>();
 
     // hashset to keep track of classifications ids which have been linked to a record
     // so un-liked classifications can be clean deleted
@@ -300,15 +301,24 @@ public class ASpaceCopyUtil implements  PrintConsole {
             String enumEndpoint = keys.next();
             JSONObject enumList = enumsJS.getJSONObject(enumEndpoint);
 
-            JSONObject updatedEnumJS = mapper.mapEnumList(enumList, enumEndpoint);
+            ArrayList<JSONObject> updatedEnums = mapper.mapEnumList(enumList, enumEndpoint);
 
-            if(updatedEnumJS != null && !enumEndpoint.contains("enum_type=countries")) {
-                String endpoint = updatedEnumJS.getString("uri");
-                String jsonText = updatedEnumJS.toString();
-                String id = saveRecord(endpoint, jsonText, "EnumList->" + enumEndpoint);
+            for (JSONObject updatedEnumJS : updatedEnums) {
 
-                if (!id.equalsIgnoreCase(NO_ID)) {
-                    print("Copied Enum List Values: " + enumEndpoint + " :: " + id);
+                if (updatedEnumJS != null && !enumEndpoint.contains("enum_type=countries")) {
+                    String endpoint = updatedEnumJS.getString("uri");
+                    String jsonText = updatedEnumJS.toString();
+                    String id = saveRecord(endpoint, jsonText, "EnumList->" + enumEndpoint);
+
+                    if (!id.equalsIgnoreCase(NO_ID)) {
+                        print("Copied Enum List Values: " + enumEndpoint + " :: " + id);
+
+                        // since this list needs to be updated twice need to store updates to avoid conflict
+                        if (updatedEnumJS.getString("name").equals("name_source")) {
+                            dynamicEnums = aspaceClient.loadDynamicEnums();
+                            mapper.setASpaceDynamicEnums(dynamicEnums);
+                        }
+                    }
                 }
             }
 
@@ -684,15 +694,6 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 case 19:
                 case 21:
                 case 23:
-                    // add any relationships if needed
-                    if(creator.has("CreatorRelationships") && !creator.get("CreatorRelationships").equals(null)) {
-                        try {
-                            addCreatorRelationShips(records, creator, agentJS);
-                        } catch(Exception e) {
-                            print("Invalid Relationship Record For: " + creator.getString("Name"));
-                        }
-                    }
-
                     id = saveRecord(ASpaceClient.AGENT_PEOPLE_ENDPOINT, agentJS.toString(), "Creator_Person->" + creator.getString("Name"));
                     uri = ASpaceClient.AGENT_PEOPLE_ENDPOINT + "/" + id;
                     break;
@@ -722,6 +723,24 @@ public class ASpaceCopyUtil implements  PrintConsole {
 
         updateRecordTotals("Names", total, success);
 
+        // now add the relationships between creators
+        print("Adding related creator relationships ...");
+        for (String key : invertedKeys) {
+            JSONObject creator = records.getJSONObject(key);
+            // add any relationships if needed
+            if(creator.has("CreatorRelationships") && !creator.getString("CreatorRelationships").equals("null")) {
+                try {
+                    String arId = creator.getString("ID");
+                    String uri = nameURIMap.get(arId);
+                    JSONObject agentJS = new JSONObject(aspaceClient.get(uri, null));
+                    addCreatorRelationShips(records, creator, agentJS);
+                    saveRecord(uri, agentJS.toString(), "Creator->" + creator.getString("Name"));
+                } catch(Exception e) {
+                    print("Invalid Relationship Record For: " + creator.getString("Name"));
+                }
+            }
+        }
+
         // refresh the database connection to prevent heap space error
         freeMemory();
     }
@@ -735,6 +754,7 @@ public class ASpaceCopyUtil implements  PrintConsole {
      */
     private void addCreatorRelationShips(JSONObject records, JSONObject creator, JSONObject agentJS) throws Exception {
         JSONArray relationships = creator.getJSONArray("CreatorRelationships");
+        int creatorTypeID = creator.getInt("CreatorTypeID");
 
         JSONArray relatedAgentsJA = new JSONArray();
 
@@ -747,7 +767,7 @@ public class ASpaceCopyUtil implements  PrintConsole {
 
             String relatedCreatorID = relatedCreator.getString("ID");
 
-            int creatorTypeID = relatedCreator.getInt("CreatorTypeID");
+            int relatedCreatorTypeID = relatedCreator.getInt("CreatorTypeID");
             String uri = nameURIMap.get(relatedCreatorID);
 
             if (uri == null) {
@@ -755,120 +775,64 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 continue;
             }
 
-            if (creatorRelationshipTypeID == 2) {
-                switch (creatorTypeID) {
-                    case 19:
-                    case 21:
-                    case 23:
-                        JSONObject agentRelationJS = new JSONObject();
+            JSONObject agentRelationJS = new JSONObject();
+            agentRelationJS.put("ref", uri);
+            if (relationship.has("Description")) {
+                String description = relationship.getString("Description");
+                if (!description.equals("null")) agentRelationJS.put("description", relationship.getString("Description"));
+            }
 
-                        agentRelationJS.put("jsonmodel_type", "agent_relationship_parentchild");
-                        agentRelationJS.put("relator", "is_parent_of");
-                        agentRelationJS.put("ref", uri);
-                        relatedAgentsJA.put(agentRelationJS);
-
-                        System.out.println("Adding relationship " + relationship.toString());
-                        break;
-                    case 22:
-                        agentRelationJS = new JSONObject();
-
+            // find the appropriate ASpace relationship type based on agent types and Archon relationship type
+            switch (creatorRelationshipTypeID) {
+                case 4:
+                    // agent_relationship_earlierlater :: is_earlier_form_of
+                    agentRelationJS.put("jsonmodel_type", "agent_relationship_earlierlater");
+                    agentRelationJS.put("relator", "is_earlier_form_of");
+                    break;
+                case 5:
+                    // agent_relationship_earlierlater :: is_later_form_of
+                    agentRelationJS.put("jsonmodel_type", "agent_relationship_earlierlater");
+                    agentRelationJS.put("relator", "is_later_form_of");
+                    break;
+                case 2:
+                    if (creatorTypeID == 19 || creatorTypeID == 21 || creatorTypeID == 23) {
+                        if (relatedCreatorTypeID == 19 || relatedCreatorTypeID == 21 || relatedCreatorTypeID == 23) {
+                            // agent_relationship_parentchild :: is_parent_of
+                            agentRelationJS.put("jsonmodel_type", "agent_relationship_parentchild");
+                            agentRelationJS.put("relator", "is_parent_of");
+                            break;
+                        }
+                    }
+                    if (creatorTypeID == 22 && relatedCreatorTypeID == 22) {
+                        // agent_relationship_subordinatesuperior :: is_superior_of
                         agentRelationJS.put("jsonmodel_type", "agent_relationship_subordinatesuperior");
                         agentRelationJS.put("relator", "is_superior_of");
-                        agentRelationJS.put("ref", uri);
-                        relatedAgentsJA.put(agentRelationJS);
-
-                        System.out.println("Adding relationship " + relationship.toString());
                         break;
-                    default:
-                        System.out.println("Unable to create a parent-child relationship for Creator " + relatedCreatorID + " - this creator is not a person.");
-                        break;
-                }
-            } else if (creatorRelationshipTypeID == 3) {
-                switch (creatorTypeID) {
-                    case 19:
-                    case 21:
-                    case 23:
-                        JSONObject agentRelationJS = new JSONObject();
-
-                        agentRelationJS.put("jsonmodel_type", "agent_relationship_parentchild");
-                        agentRelationJS.put("relator", "is_child_of");
-                        agentRelationJS.put("ref", uri);
-                        relatedAgentsJA.put(agentRelationJS);
-
-                        System.out.println("Adding relationship " + relationship.toString());
-                        break;
-                    case 22:
-                        agentRelationJS = new JSONObject();
-
+                    }
+                case 3:
+                    if (creatorTypeID == 19 || creatorTypeID == 21 || creatorTypeID == 23) {
+                        if (relatedCreatorTypeID == 19 || relatedCreatorTypeID == 21 || relatedCreatorTypeID == 23) {
+                            // agent_relationship_parentchild :: is_child_of
+                            agentRelationJS.put("jsonmodel_type", "agent_relationship_parentchild");
+                            agentRelationJS.put("relator", "is_child_of");
+                            break;
+                        }
+                    }
+                    if (creatorTypeID == 22 && relatedCreatorTypeID == 22) {
+                        // agent_relationship_subordinatesuperior :: is_subordinate_to
                         agentRelationJS.put("jsonmodel_type", "agent_relationship_subordinatesuperior");
                         agentRelationJS.put("relator", "is_subordinate_to");
-                        agentRelationJS.put("ref", uri);
-                        relatedAgentsJA.put(agentRelationJS);
-
-                        System.out.println("Adding relationship " + relationship.toString());
                         break;
-                    default:
-                        System.out.println("Unable to create a child-parent relationship for Creator " + relatedCreatorID + " - this creator is not a person.");
-                        break;
-                }
-            } else if (creatorRelationshipTypeID == 4) {
-                switch (creatorTypeID) {
-                    case 19:
-                    case 21:
-                    case 22:
-                    case 23:
-                        JSONObject agentRelationJS = new JSONObject();
-
-                        agentRelationJS.put("jsonmodel_type", "agent_relationship_earlierlater");
-                        agentRelationJS.put("relator", "is_earlier_form_of");
-                        agentRelationJS.put("ref", uri);
-                        relatedAgentsJA.put(agentRelationJS);
-
-                        System.out.println("Adding relationship " + relationship.toString());
-                        break;
-                    default:
-                        System.out.println("Unable to create a earlier_form_of relationship for Creator " + relatedCreatorID + " - this creator is not a person.");
-                        break;
-                }
-            } else if (creatorRelationshipTypeID == 5) {
-                switch (creatorTypeID) {
-                    case 19:
-                    case 21:
-                    case 22:
-                    case 23:
-                        JSONObject agentRelationJS = new JSONObject();
-
-                        agentRelationJS.put("jsonmodel_type", "agent_relationship_earlierlater");
-                        agentRelationJS.put("relator", "is_later_form_of");
-                        agentRelationJS.put("ref", uri);
-                        relatedAgentsJA.put(agentRelationJS);
-
-                        System.out.println("Adding relationship " + relationship.toString());
-                        break;
-                    default:
-                        System.out.println("Unable to create a earlier_form_of relationship for Creator " + relatedCreatorID + " - this creator is not a person.");
-                        break;
-                }
-            } else if (creatorRelationshipTypeID == 7) {
-                switch (creatorTypeID) {
-                    case 19:
-                    case 21:
-                    case 22:
-                    case 23:
-                        JSONObject agentRelationJS = new JSONObject();
-
-                        agentRelationJS.put("jsonmodel_type", "agent_relationship_associative");
-                        agentRelationJS.put("relator", "is_associative_with");
-                        agentRelationJS.put("ref", uri);
-                        relatedAgentsJA.put(agentRelationJS);
-
-                        System.out.println("Adding relationship " + relationship.toString());
-                        break;
-                    default:
-                        System.out.println("Unable to create a associative relationship for Creator " + relatedCreatorID + " - this creator is not a person.");
-                        break;
-                }
+                    }
+                default:
+                    // agent_relationship_associative :: is_associative_with
+                    agentRelationJS.put("jsonmodel_type", "agent_relationship_associative");
+                    agentRelationJS.put("relator", "is_associative_with");
             }
+
+            relatedAgentsJA.put(agentRelationJS);
+
+            System.out.println("Adding relationship " + relationship.toString());
         }
 
         if(relatedAgentsJA.length() > 0) {
@@ -888,7 +852,6 @@ public class ASpaceCopyUtil implements  PrintConsole {
 
             subject.put("ID", key);
             subject.put("Name", sortName);
-            subject.put("CreatorSourceID", 99); // this will get set to local
 
             if(subjectTypeID == 8) {
                 // this is a person agent
@@ -999,7 +962,7 @@ public class ASpaceCopyUtil implements  PrintConsole {
             JSONArray classificationChildren = classification.getJSONArray("children");
 
             // add the id for this classification
-            classificationIdPartsMap.put(arId, classification.getString("id_parts"));
+            classificationIdentifiers.put(arId, classification.getString("ClassificationIdentifier"));
 
             for (int i = 0; i < classificationChildren.length(); i++) {
                 if (stopCopy) return 0;
@@ -1015,14 +978,15 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 String classificationTermURI = repoURI + ASpaceClient.CLASSIFICATION_TERM_ENDPOINT + "/" + cId;
                 classificationTermURIs.add(classificationTermURI);
 
-                classificationIdPartsMap.put(cId, classificationTerm.getString("id_parts"));
+                classificationIdentifiers.put(cId, classificationTerm.getString("ClassificationIdentifier"));
+                String pId = classificationTerm.getString("ParentID");
+                classificationParents.put(cId, pId);
 
                 if (classificationTermJS != null) {
                     classificationTermJS.put("uri", classificationTermURI);
 
                     classificationTermJS.put("classification", mapper.getReferenceObject(classificationURI));
 
-                    String pId = classificationTerm.getString("ParentID");
                     if (!pId.equals(arId)) {
                         String parentURI = repoURI + ASpaceClient.CLASSIFICATION_TERM_ENDPOINT + "/" + pId;
                         classificationTermJS.put("parent", mapper.getReferenceObject(parentURI));
@@ -1176,10 +1140,13 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 String repoURI = getAccessionRepositoryURI(arId);
 
                 // add the subjects
-                addSubjects(accessionJS, accession.getJSONArray("Subjects"), accessionTitle);
+                ArrayList<String> subjectAsCreatorsList = addSubjects(accessionJS, accession.getJSONArray("Subjects"), accessionTitle);
 
                 // add the linked agents aka Names records
                 JSONArray linkedAgentsJA = addCreators(accessionJS, accession.getJSONArray("Creators"), accessionTitle);
+
+                // add the agent subjects
+                addSubjectsAsCreators(linkedAgentsJA, subjectAsCreatorsList, accessionTitle);
 
                 // add the donors
                 if(accession.has("Donor") && !accession.getString("Donor").isEmpty()) {
@@ -1294,10 +1261,13 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 batchJA.put(digitalObjectJS);
 
                 // add the subjects
-                addSubjects(digitalObjectJS, digitalObject.getJSONArray("Subjects"), digitalObjectTitle);
+                ArrayList<String> subjectAsCreatorsList = addSubjects(digitalObjectJS, digitalObject.getJSONArray("Subjects"), digitalObjectTitle);
 
                 // add the linked agents aka Names records
-                addCreators(digitalObjectJS, digitalObject.getJSONArray("Creators"), digitalObjectTitle);
+                JSONArray linkedAgentsJA = addCreators(digitalObjectJS, digitalObject.getJSONArray("Creators"), digitalObjectTitle);
+
+                // add the agent subjects
+                addSubjectsAsCreators(linkedAgentsJA, subjectAsCreatorsList, digitalObjectTitle);
 
                 // add any archival objects here
                 JSONArray digitalObjectChildren = digitalObject.getJSONArray("components");
@@ -1328,32 +1298,19 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 }
 
                 // check to see we just not saving the digital objects or copying them now
-//                String digitalObjectListKey = null;
                 int collectionID = 0;
                 int contentID = 0;
 
                 if(saveDigitalObjectsWithResources) {
                     collectionID = digitalObject.getInt("CollectionID");
                     contentID = digitalObject.getInt("CollectionContentID");
-//                    if(digitalObject.getInt("CollectionID") != 0) {
-//                        if(digitalObject.getInt("CollectionContentID") != 0) {
-//                            digitalObjectListKey = "content_" + digitalObject.get("CollectionContentID");
-//                        } else {
-//                            digitalObjectListKey = "collection_" + digitalObject.get("CollectionID");
-//                        }
-//                    } else {
-//                        print("No record to attach digital object " + digitalObjectTitle + "...");
-//                        print("Saving to default repository ...");
-//                    }
                 }
 
                 // call methods to actually save this digital object to the back end
                 // or store it for saving when saving the resource records
-//                if(digitalObjectListKey != null) {
                 if (collectionID != 0 || contentID != 0) {
                     digitalObjectTotal++;
                     storeDigitalObject(batchJA, collectionID, contentID);
-//                    storeDigitalObject(batchJA, digitalObjectListKey);
                 } else {
 
                     print("No record to attach digital object " + digitalObjectTitle + "...");
@@ -1434,12 +1391,6 @@ public class ASpaceCopyUtil implements  PrintConsole {
             digitalObjectList = new ArrayList<JSONArray>();
             collectionMap.put(contentID, digitalObjectList);
         }
-
-//        if(digitalObjectMap.containsKey(digitalObjectListKey)) {
-//            digitalObjectList = digitalObjectMap.get(digitalObjectListKey);
-//        } else {
-//            digitalObjectMap.put(digitalObjectListKey, digitalObjectList);
-//        }
 
         digitalObjectList.add(batchJA);
     }
@@ -1573,9 +1524,6 @@ public class ASpaceCopyUtil implements  PrintConsole {
             // create the batch import JSON array in case we need it
             JSONArray batchJA = new JSONArray();
 
-            // hashmap used to store components so tree can be generated and sort orders be corrected
-            HashMap<String, JSONObject> parentMap = new HashMap<String, JSONObject>();
-
             // we need to update the progress bar here
             updateProgress("Collection Records", total, count);
 
@@ -1583,7 +1531,7 @@ public class ASpaceCopyUtil implements  PrintConsole {
             print("Copying Collection: " + collectionTitle + " ,DB_ID: " + dbId);
 
             // get the main json object
-            JSONObject resourceJS = mapper.convertCollection(collection, classificationIdPartsMap);
+            JSONObject resourceJS = mapper.convertCollection(collection, classificationIdentifiers, classificationParents);
 
             if (resourceJS != null) {
                 String repoURI = getRepositoryURI(repositoryID);
@@ -1608,7 +1556,6 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 }
 
                 // add the instances
-//                addDigitalInstances(resourceJS, "collection_" + dbId, collectionTitle, batchEndpoint);
                 addDigitalInstances(resourceJS, intID, 0, collectionTitle, batchEndpoint);
 
                 // add the linked accessions
@@ -1633,14 +1580,30 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 // stores any component IDs that are referenced as parents but not actually in the database
                 HashSet<String> notFoundIDs = new HashSet<String>();
 
+                // stores components with invalid (looping) parent relationships
+                HashSet<String> invalidParentIDs = new HashSet<String>();
+
                 // maps saved top container type/indicator combos with its uri in ASpace
                 HashMap<String, String> topContainerURIs = new HashMap<String, String>();
 
-                // maps a physical component ID with that component's parent's ID
-                HashMap<String, String> physicalComponentsToParentIDs = new HashMap<String, String>();
+                // maps a physical component to any intellectual components it will need an instance for
+                // this is for intellectual only components that are immediate children of a physical only component
+                HashMap<String, ArrayList<String>> physicalComponentInstanceOfIDs = new HashMap<String, ArrayList<String>>();
+
+                // maps a physical component ID with that component's intellectual parent ID
+                HashMap<String, String> physicalComponentParents = new HashMap<String, String>();
 
                 // map a physical component ID with that components hierarchy of physical components (for containers)
                 HashMap<String, Stack<JSONObject>> physicalComponentsData = new HashMap<String, Stack<JSONObject>>();
+
+                // stores string sort keys
+                HashMap<String, TreeSet<String>> sortKeysByParent = new HashMap<String, TreeSet<String>>();
+
+                // maps an intellectual component to a boolean that tells if it has exactly 1 child
+                HashMap<String, Boolean> hasOneChild = new HashMap<String, Boolean>();
+
+                // store physical content IDs we may not need to add an instance for since they have child physical content
+                HashSet<String> skipParentInstanceFor = new HashSet<String>();
 
                 Iterator<String> ckeys = resourceComponents.sortedKeys();
                 while (ckeys.hasNext()) {
@@ -1662,13 +1625,15 @@ public class ASpaceCopyUtil implements  PrintConsole {
 
                             String nextComponentID = component.getString("ParentID");
                             int loopCount = 0;
+                            String sortKey = Character.toString((char) component.getInt("SortOrder"));
 
                             // find the first intellectual parent component if there is one
                             while (!nextComponentID.equals("0")) {
 
                                 // avoid getting stuck in an infinite loop if references circle back around
-                                if (nextComponentID.equals(cid)) break;
-                                if (++loopCount > 12) {
+                                if (nextComponentID.equals(cid) || ++loopCount > 12) {
+                                    componentJS.put("publish", false);
+                                    invalidParentIDs.add(cid);
                                     break;
                                 }
 
@@ -1686,7 +1651,31 @@ public class ASpaceCopyUtil implements  PrintConsole {
                                 // if the component is not physical only it can be the parent and we're done
                                 if (nextComponent.getInt("ContentType") != 2) {
                                     parentId = nextComponent.getInt("ID");
+
+                                    if (loopCount == 1) {
+                                        // update whether the parent has exactly one child
+                                        if (!hasOneChild.containsKey(parentId + "")) {
+                                            hasOneChild.put(parentId + "", true);
+                                        } else {
+                                            hasOneChild.put(parentId + "", false);
+                                        }
+                                    }
+
                                     break;
+                                } else {
+
+                                    // if the immediate parent of a intellectual only component is physical only
+                                    // then we will need to create an instance of the child to link them
+                                    if (loopCount == 1 && (contentType == 1 || nextComponent.getString("OtherLevel").equals("undefined"))) {
+                                        if (!physicalComponentInstanceOfIDs.containsKey(nextComponentID)) {
+                                            physicalComponentInstanceOfIDs.put(nextComponentID, new ArrayList<String>());
+                                        }
+                                        physicalComponentInstanceOfIDs.get(nextComponentID).add(cid);
+                                    }
+
+                                    // add the sort order for parent physical only components to the sort key
+                                    char nextSortKey = (char) nextComponent.getInt("SortOrder");
+                                    sortKey = nextSortKey + sortKey;
                                 }
 
                                 // otherwise try again with that component's parent
@@ -1703,6 +1692,13 @@ public class ASpaceCopyUtil implements  PrintConsole {
                             // add mapping of component to parent
                             intellectualComponentParents.put(cid, parentId + "");
 
+                            // add the sort key so the position can be calculated
+                            componentJS.put("sort_key", sortKey);
+                            if (!sortKeysByParent.containsKey(parentId + "")) {
+                                sortKeysByParent.put(parentId + "", new TreeSet<String>());
+                            }
+                            sortKeysByParent.get(parentId + "").add(sortKey);
+
                             // add the subjects now
                             subjectAsCreatorsList = addSubjects(componentJS, component.getJSONArray("Subjects"), title);
 
@@ -1713,7 +1709,6 @@ public class ASpaceCopyUtil implements  PrintConsole {
                             addSubjectsAsCreators(linkedAgentsJA, subjectAsCreatorsList, title);
 
                             // add the digital instances
-//                            addDigitalInstances(componentJS, "content_" + cid, collectionTitle, batchEndpoint);
                             addDigitalInstances(componentJS, intID, Integer.parseInt(cid), collectionTitle, batchEndpoint);
 
                             // save this json record now to get the URI
@@ -1730,7 +1725,7 @@ public class ASpaceCopyUtil implements  PrintConsole {
                     }
 
                     // prepare to add an instance (and container data) if it is a physical component
-                    if (contentType != 1){
+                    if (contentType != 1 && !component.getString("OtherLevel").equals("undefined")){
 
                         String intellectualParentID = null;
 
@@ -1738,8 +1733,13 @@ public class ASpaceCopyUtil implements  PrintConsole {
                         Stack<JSONObject> componentChain = new Stack<JSONObject>();
                         String nextComponentID = cid;
 
+                        // fail safe to make sure we don't get stuck in an infinite loop
+                        int loopCount = 0;
+
                         // find the intellectual parent and physical hierarchy
                         while (!nextComponentID.equals("0")) {
+
+                            if (++loopCount > 12) break;
 
                             JSONObject nextComponent;
                             try {
@@ -1751,10 +1751,14 @@ public class ASpaceCopyUtil implements  PrintConsole {
                             }
 
                             // if it is a physical component add it to the stack
-                            if (nextComponent.getInt("ContentType") != 1) {
+                            if (nextComponent.getInt("ContentType") != 1 &&
+                                    !nextComponent.getString("OtherLevel").equals("undefined")) {
 
-                                // check to be sure we're not stuck in an infinite loop
-                                if (!componentChain.contains(nextComponent)) componentChain.push(nextComponent);
+                                // usually earliest way to tell if we are stuck in infinate loop
+                                if (!componentChain.contains(nextComponent)) {
+                                    componentChain.push(nextComponent);
+                                    if (loopCount > 1) skipParentInstanceFor.add(nextComponentID);
+                                }
                                 else break;
                             }
 
@@ -1769,26 +1773,58 @@ public class ASpaceCopyUtil implements  PrintConsole {
                         if (componentChain.size() == 0) componentChain.push(component);
 
                         // save the hierarchy/parent data we just found so we can add an instance later
-                        physicalComponentsToParentIDs.put(cid, intellectualParentID);
+                        physicalComponentParents.put(cid, intellectualParentID);
                         physicalComponentsData.put(cid, componentChain);
+
+                        // update whether the parent has exactly one child
+                        if (componentChain.size() == 1) {
+                            if (!hasOneChild.containsKey(intellectualParentID)) {
+                                hasOneChild.put(intellectualParentID, true);
+                            } else {
+                                hasOneChild.put(intellectualParentID, false);
+                            }
+                        }
                     }
                 }
 
                 // now add instances for the physical components
-                for (String id: physicalComponentsToParentIDs.keySet()) {
+                for (String id: physicalComponentParents.keySet()) {
 
                     // get the parent's ASpace JSON record
-                    String parentId = physicalComponentsToParentIDs.get(id);
+                    String parentId = physicalComponentParents.get(id);
                     JSONObject parentJSON = intellectualComponents.get(parentId);
                     if (parentJSON == null) parentJSON = resourceJS;
 
-                    // add an instance for this physical component to the parent's JSON record
+                    // get the component's physical hierarchy
                     Stack<JSONObject> componentChain = physicalComponentsData.get(id);
-                    addInstance(parentJSON, componentChain, topContainerURIs, repoURI);
+
+                    // add an instance for this physical component to each record in list
+                    ArrayList<JSONObject> instanceList = new ArrayList<JSONObject>();
+
+                    if (physicalComponentInstanceOfIDs.containsKey(id)) {
+                        for (String recordID : physicalComponentInstanceOfIDs.get(id)) {
+                            JSONObject recordJSON = intellectualComponents.get(recordID);
+                            if (recordJSON != null) instanceList.add(recordJSON);
+                        }
+                    }
+
+                    // if there are no components in list link the container to an instance of its intellectual parent
+                    // also if the container is the only child of the parent and top level
+                    if (id.equals(parentId)) {
+                        instanceList.add(parentJSON);
+                    } else {
+                        if (componentChain.size() == 1 && hasOneChild.containsKey(parentId) && hasOneChild.get(parentId)) {
+                            instanceList.add(parentJSON);
+                        } else if (instanceList.isEmpty() && !skipParentInstanceFor.contains(id)) {
+                            instanceList.add(parentJSON);
+                        }
+                    }
+
+                    // add an instance to every component in list
+                    if (!instanceList.isEmpty()) addInstance(instanceList, componentChain, topContainerURIs, repoURI);
 
                     // add any digital objects linked to the physical component in archon
                     // they linked to the component's parent in ASpace since digital object can't be linked to container
-//                    addDigitalInstances(parentJSON, "content_" + id, null, batchEndpoint);
                     addDigitalInstances(parentJSON, intID, Integer.parseInt(id), null, batchEndpoint);
                 }
 
@@ -1815,17 +1851,36 @@ public class ASpaceCopyUtil implements  PrintConsole {
                 if (notFoundIDs.size() != 0) {
                     StringBuilder errorMessage = new StringBuilder();
                     errorMessage.append("Could not find ").append(notFoundIDs.size())
-                            .append(" component(s) for resource: ").append(arId).append("\nNot found components:");
-                    for (String id : notFoundIDs) errorMessage.append(" ").append(id);
+                            .append(" component(s) for resource: ").append(arId);
+                    if (notFoundIDs.size() <= 20) {
+                        errorMessage.append("\nNot found components:");
+                        for (String id : notFoundIDs) errorMessage.append(" ").append(id);
+                    }
                     errorMessage.append("\nReferencing child components/digital objects will have root resource record as parent.");
                     errorMessage.append("\nReferencing child components will be unpublished.\n");
                     addErrorMessage(errorMessage.toString());
                 }
 
-                // add the components to the batch JA
+                // add the component positions and add them to the batch JA
                 HashSet<String> added = new HashSet<String>();
                 for (String cid : intellectualComponents.keySet()) {
-                    addComponentToBatch(cid, batchJA, intellectualComponentParents, intellectualComponents, added);
+                    JSONObject componentJS = intellectualComponents.get(cid);
+                    addComponentPosition(componentJS, cid, intellectualComponentParents, sortKeysByParent);
+                    addComponentToBatch(cid, batchJA, intellectualComponentParents, intellectualComponents, added, invalidParentIDs);
+                }
+
+                // add a warning for components with invalid parent relationships
+                if (invalidParentIDs.size() != 0) {
+                    StringBuilder errorMessage = new StringBuilder();
+                    errorMessage.append("Invalid parent relationships found for ").append(invalidParentIDs.size())
+                            .append(" component(s) for resource: ").append(arId);
+                    if (invalidParentIDs.size() <= 20) {
+                        errorMessage.append("\nInvalid relationships found for components:");
+                        for (String id : invalidParentIDs) errorMessage.append(" ").append(id);
+                    }
+                    errorMessage.append("\nThese components will have root resource record as parent and be unpublished.");
+                    errorMessage.append("\nCleanup will be required for this resource.\n");
+                    addErrorMessage(errorMessage.toString());
                 }
 
                 // free some memory now
@@ -1870,6 +1925,33 @@ public class ASpaceCopyUtil implements  PrintConsole {
     }
 
     /**
+     * calculates the position of a given component
+     * this has to be redone since the containers are no longer included in the sorting
+     * @param componentJS
+     * @param cID
+     * @param intellectualComponentParents
+     * @param sortKeysByParent
+     * @throws JSONException
+     */
+    private void addComponentPosition(JSONObject componentJS, String cID,
+                                      HashMap<String, String> intellectualComponentParents,
+                                      HashMap<String, TreeSet<String>> sortKeysByParent) throws JSONException {
+        // get the parent since sorting is scoped by parent
+        String parentID = "0";
+        if (intellectualComponentParents.containsKey(cID)) parentID = intellectualComponentParents.get(cID);
+
+        // the sort keys are strings that have the correct sort order
+        String sortKey = componentJS.getString("sort_key");
+        TreeSet<String> parentKeys = sortKeysByParent.get(parentID);
+
+        // to get an integer sort key get the position of the sort key string in the sorted set
+        if (parentKeys != null) {
+            int position = parentKeys.headSet(sortKey, true).size();
+            componentJS.put("position", position * 1000);
+        }
+    }
+
+    /**
      * method to add all the resource components to the JSON Array in an acceptable order for batch saving
      *
      * @param cid
@@ -1879,7 +1961,8 @@ public class ASpaceCopyUtil implements  PrintConsole {
      * @param added
      */
     private void addComponentToBatch(String cid, JSONArray batchJA, HashMap<String, String> intellectualComponentParents,
-                                     HashMap<String, JSONObject> intellectualComponents, HashSet<String> added) {
+                                     HashMap<String, JSONObject> intellectualComponents, HashSet<String> added,
+                                     HashSet<String> invalidParents) throws JSONException {
 
         // make sure we don't add a duplicate
         if (!added.contains(cid)) {
@@ -1887,12 +1970,15 @@ public class ASpaceCopyUtil implements  PrintConsole {
             String nextID = cid;
             int loopCount = 0;
 
-            // check that the parent relationship is valid
+            // final check that the parent relationship is valid and doesn't loop
             while (!nextID.equals("0")) {
                 nextID = intellectualComponentParents.get(nextID);
                 if (added.contains(nextID)) break;
                 if (++loopCount > 12 || nextID == null) {
-                    intellectualComponents.get(cid).remove("parent");
+                    JSONObject component = intellectualComponents.get(cid);
+                    component.remove("parent");
+                    component.put("publish", false);
+                    invalidParents.add(cid);
                     intellectualComponentParents.put(cid, "0");
                     break;
                 }
@@ -1901,7 +1987,7 @@ public class ASpaceCopyUtil implements  PrintConsole {
             // unless it's a top level component make sure it's parent has been added to the batch array first
             if (!intellectualComponentParents.get(cid).equals("0")) {
                 addComponentToBatch(intellectualComponentParents.get(cid), batchJA, intellectualComponentParents,
-                        intellectualComponents, added);
+                        intellectualComponents, added, invalidParents);
             }
 
             // add the component to the batch array and the set of IDs that have already been added
@@ -1960,13 +2046,13 @@ public class ASpaceCopyUtil implements  PrintConsole {
 
     /**
      * method to add an instance to a resource/component
-     * @param recordJS
+     * @param instanceList
      * @param componentChain
      * @param topContainerURIs
      * @param repoURI
      * @throws Exception
      */
-    private void addInstance(JSONObject recordJS, Stack<JSONObject> componentChain, HashMap<String, String> topContainerURIs,
+    private void addInstance(ArrayList<JSONObject> instanceList, Stack<JSONObject> componentChain, HashMap<String, String> topContainerURIs,
                              String repoURI) throws Exception {
 
         // the first item in the component chain becomes the top container
@@ -1974,12 +2060,18 @@ public class ASpaceCopyUtil implements  PrintConsole {
 
         String containerType;
         String containerIndicator;
+        String cid;
 
         containerType = enumUtil.getASpaceInstanceContainerType(topLevel.getString("ContainerTypeID"));
         containerIndicator = topLevel.getString("ContainerIndicator");
+        cid = topLevel.getString("ID");
+
+        // we're not going to scope it by content ID if it is physical only
+        // these indicators are typically not repeated unless they are actually the same container
+        if (topLevel.getInt("ContentType") == 2) cid = null;
 
         // add top container or get a reference to it if it already exists
-        String containerURI = addTopContainer(containerType, containerIndicator, topContainerURIs, repoURI, null);
+        String containerURI = addTopContainer(containerType, containerIndicator, topContainerURIs, repoURI, null, cid);
         JSONObject topRef = mapper.getReferenceObject(containerURI);
 
         // create a json object for the instance
@@ -2010,18 +2102,20 @@ public class ASpaceCopyUtil implements  PrintConsole {
         // add sub container to instance
         json.put("sub_container", containerJS);
 
-        // get the instance list from the record or if there is none create an empty one
-        JSONArray instanceJA;
-        try {
-            instanceJA = recordJS.getJSONArray("instances");
-        } catch (JSONException e) {
-            instanceJA = new JSONArray();
+        // add the instance to each component in our set
+        for (JSONObject recordJS : instanceList) {
+            // get the instance list from the record or if there is none create an empty one
+            JSONArray instanceJA;
+            try {
+                instanceJA = recordJS.getJSONArray("instances");
+            } catch (JSONException e) {
+                instanceJA = new JSONArray();
+            }
+
+            instanceJA.put(json);
+
+            recordJS.put("instances", instanceJA);
         }
-
-        instanceJA.put(json);
-
-        recordJS.put("instances", instanceJA);
-
     }
 
     /**
@@ -2035,17 +2129,19 @@ public class ASpaceCopyUtil implements  PrintConsole {
      * @throws Exception
      */
     private String addTopContainer(String containerType, String containerIndicator, HashMap<String, String> topContainerURIs,
-                                   String repoURI, JSONObject location) throws Exception {
+                                   String repoURI, JSONObject location, String cid) throws Exception {
         String uri;
 
-        // the key that is used to map to uri
+        // the key that is used to map to uri if there is no component ID
         String containerKey = (containerType + " " + containerIndicator).toLowerCase();
+
+        if (cid == null) cid = containerKey;
 
         JSONObject json;
 
-        if (topContainerURIs.containsKey(containerKey)) {
+        if (topContainerURIs.containsKey(cid)) {
             // the container already exists so we don't need to do anything else
-            uri =  topContainerURIs.get(containerKey);
+            uri =  topContainerURIs.get(cid);
         } else {
             // create json top container record
             json = new JSONObject();
@@ -2056,11 +2152,12 @@ public class ASpaceCopyUtil implements  PrintConsole {
             if (location != null) addLocationInfo(json, location);
 
             // save the top container record and get its uri
-            String id = saveRecord(repoURI + ASpaceClient.TOP_CONTAINER_ENDPOINT, json.toString(), null);
+            String id = saveRecord(repoURI + ASpaceClient.TOP_CONTAINER_ENDPOINT, json.toString(), "Collection content->" + cid);
             if (!id.equalsIgnoreCase(NO_ID)) {
                 uri = repoURI + ASpaceClient.TOP_CONTAINER_ENDPOINT + "/" + id;
                 print("Copied Top Container: " + containerKey);
                 topContainerURIs.put(containerKey, uri);
+                topContainerURIs.put(cid, uri);
             } else {
                 print("Fail -- Top Container: " + containerKey);
                 return null;
@@ -2143,8 +2240,6 @@ public class ASpaceCopyUtil implements  PrintConsole {
             noCollectionMap.remove(contentID);
         }
 
-//        if(digitalObjectMap.containsKey(recordKey)) {
-
         if (recordTitle == null) {
             try {
                 recordTitle = json.getString("title");
@@ -2153,10 +2248,8 @@ public class ASpaceCopyUtil implements  PrintConsole {
             }
         }
 
-//            ArrayList<JSONArray> digitalObjectList = digitalObjectMap.get(recordKey);
 
         // to make sure digital objects aren't added twice if component is both intellectual and physical
-//            digitalObjectMap.remove(recordKey);
         collectionMap.remove(contentID);
 
         for(JSONArray batchJA: digitalObjectList) {
@@ -2418,7 +2511,28 @@ public class ASpaceCopyUtil implements  PrintConsole {
 
             JSONObject location = locations.getJSONObject(i);
 
-            String[] info = getTypeAndIndicator(location.getString("Content"));
+            String content = location.getString("Content");
+
+            // if it says 'all' in the content field, add the location to all existing containers
+            if (content.trim().equalsIgnoreCase("all") && !topContainerURIs.isEmpty()) {
+                for (String topContainerURI : topContainerURIs.values()) {
+                    try {
+                        JSONObject containerJS = new JSONObject(aspaceClient.get(topContainerURI, null));
+                        addLocationInfo(containerJS, location);
+                        String id = saveRecord(topContainerURI, containerJS.toString(), null);
+                        if (!id.equalsIgnoreCase(NO_ID)) {
+                            print("Added Location to Top Container: all");
+                        } else {
+                            print("Fail -- Add location to Top Container: all");
+                        }
+                    } catch (NullPointerException e) {
+                        print("Fail -- Add location to Top Container: all\nCould not load " + topContainerURI);
+                    }
+                }
+                continue;
+            }
+
+            String[] info = getTypeAndIndicator(content);
 
             String containerType = info[0];
 
@@ -2518,7 +2632,7 @@ public class ASpaceCopyUtil implements  PrintConsole {
         JSONObject containerJS = new JSONObject();
 
         String containerURI = addTopContainer(containerType, containerIndicator, topURIs, repoURI,
-                location);
+                location, null);
         JSONObject containerRef = mapper.getReferenceObject(containerURI);
 
         containerJS.put("top_container", containerRef);
@@ -2977,7 +3091,7 @@ public class ASpaceCopyUtil implements  PrintConsole {
 
         String totalRecordsCopied = getTotalRecordsCopiedMessage();
 
-        print("\n\nFinish copying data ... Total time: " + stopWatch.getPrettyTime());
+        print("\n\nFinished copying data ... Total time: " + stopWatch.getPrettyTime());
         print("\nNumber of Records copied: \n" + totalRecordsCopied);
 
         print("\nNumber of errors/warnings: " + aspaceErrorCount);
