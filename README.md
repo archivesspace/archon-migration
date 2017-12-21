@@ -5,7 +5,7 @@ The Archon to ArchivesSpace migration tool enables migration of data from an Arc
 
 More instructions and a data mapping are available at on the ArchivesSpace migration tools and data mapping page at http://archivesspace.org/using-archivesspace/migration-tools-and-data-mapping/.
 
-We recommend migrating to the latest version of ArchivesSpace when possible. Archon users who are ready to move to the latest version of ArchivesSpace should use version ?.?.? of the tool. Archon users who wish to move into a pre-1.5.0 version of ArchivesSpace due to the container management changes should use version 1.0.1 of the tool.
+We recommend migrating to the latest version of ArchivesSpace when possible. Archon users who are ready to move to the latest version of ArchivesSpace should use version 2.0 of the tool. Archon users who wish to move into a pre-1.5.0 version of ArchivesSpace due to the container management changes should use version 1.0.1 of the tool.
 
 ## Running the Archon migration tool
 
