@@ -2,18 +2,18 @@
 # simple script to build program distribution
 
 # delete the directory with old distribution
-rm -rv dist/ArchonMigrator
+rm -rv dist/archon_migration
 
 # create new directory
-mkdir dist/ArchonMigrator
-mkdir dist/ArchonMigrator/lib
-mkdir dist/ArchonMigrator/logs
+mkdir -p dist/archon_migration
+mkdir -p dist/archon_migration/lib
+mkdir -p dist/archon_migration/logs
 
 # copy the needed files
-cp -v out/artifacts/ArchonMigrator_jar/* dist/ArchonMigrator/lib
-cp -v run.* dist/ArchonMigrator
+cp -v out/artifacts/archon_migration_jar/* dist/archon_migration/lib
+cp -v run.* dist/archon_migration
 
 # create a zip of the source code
 cd dist
 
-zip -vr ArchonMigrator.zip ArchonMigrator -x "*.svn*" "*.DS_Store*"
+zip -vr archon_migration.zip archon_migration -x "*.svn*" "*.DS_Store*"

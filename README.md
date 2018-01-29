@@ -1,4 +1,4 @@
-ArchonMigrator
+archon_migration
 ============
 
 The Archon to ArchivesSpace migration tool enables migration of data from an Archon instance to an ArchivesSpace instance. It is the most comprehensive and efficient option for people who have not previously migrated and want to migrate all of their Archon data to ArchivesSpace.
