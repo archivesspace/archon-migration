@@ -3,5 +3,5 @@ dist/
 META-INF/
 *.swp
 out/
-ArchonMigrator.iml
+archon_migration.iml
 /logs/*.xml

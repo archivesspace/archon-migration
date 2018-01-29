@@ -18,7 +18,6 @@ import java.util.*;
  * Utility class for copying data from the Archon to Archivesspace
  */
 public class ASpaceCopyUtil implements  PrintConsole {
-    public static final String SUPPORTED_ASPACE_VERSION = "v2.1,v2.2";
 
     // String to indicate when no ids where return from aspace backend
     private final String NO_ID = "no id assigned";
